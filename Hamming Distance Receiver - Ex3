@@ -1,0 +1,102 @@
+#include <stdio.h>
+int n,r,i,k,p,val,synd,ch,pos;
+int cw[20];
+int powerOfTwo(int pow)
+{
+    int result = 1;
+    int x;
+    for(x = 0; x < pow; x++) {
+        result *= 2;
+    }
+    return result;
+}
+int isBitSet(int num, int bitPos)
+{
+    int temp = num;
+    int x;
+    for(x = 0; x < bitPos; x++) {
+        temp /= 2;
+    }
+    return (temp % 2 == 1);
+}
+void receive()
+{
+    FILE *fp;
+    fp=fopen("hamming.dat","rb");
+    fread(&n,sizeof(int),1,fp);
+    fread(&r,sizeof(int),1,fp);
+    fread(cw,sizeof(int),20,fp);
+    fclose(fp);
+}
+void display()
+{
+    printf("\nReceived codeword (position 1 to %d):\n",n);
+    for(i=1;i<=n;i++)
+        printf("%d ",cw[i]);
+    printf("\n");
+}
+void checkcorrect()
+{
+    synd=0;
+    for(k=0;k<r;k++)
+    {
+        p = powerOfTwo(k);
+        val=0;
+        for(i=1;i<=n;i++)
+            if(isBitSet(i, k))
+                val=val^cw[i];
+        synd=synd+val*p;
+    }
+    if(synd==0)
+        printf("\nNo error detected.\n");
+    else
+    {
+        printf("\nError detected at position %d.\n",synd);
+        cw[synd]=1-cw[synd];
+        display();
+        printf("Error corrected.\n");
+    }
+}
+void extractdata()
+{
+    printf("\nOriginal data bits: ");
+    for(i=1;i<=n;i++)
+    {
+        int isPowerOfTwo = 0;
+        for(k=0; k<=r; k++) {
+            if(i == powerOfTwo(k)) {
+                isPowerOfTwo = 1;
+                break;
+            }
+        }
+        if(!isPowerOfTwo)
+            printf("%d ",cw[i]);
+    }
+    printf("\n");
+}
+void modify()
+{
+    printf("\nEnter bit position to flip (1 to %d): ",n);
+    scanf("%d",&pos);
+    cw[pos]=1-cw[pos];
+
+}
+int main()
+{
+    receive();
+    display();
+    checkcorrect();
+    extractdata();
+    printf("\nDo you want to flip a bit(1-yes, 0-no): ");
+    scanf("%d",&ch);
+    while(ch==1)
+    {
+        modify();
+        display();
+        checkcorrect();
+        extractdata();
+        printf("\nDo you want to flip another bit(1-yes, 0-no): ");
+        scanf("%d",&ch);
+    }
+    return 0;
+}
