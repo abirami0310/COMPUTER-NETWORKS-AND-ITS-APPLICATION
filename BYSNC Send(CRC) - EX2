@@ -1,0 +1,412 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+
+typedef struct
+{
+    char url[50];
+    char ip[20];
+    char mac[20];
+} AddressTable;
+
+AddressTable table[] =
+{
+    {"www.gmail.com",   "142.250.183.5",   "AA:11:22:33:44:55"},
+    {"www.google.com",  "142.250.183.14",  "BB:22:33:44:55:66"},
+    {"www.yahoo.com",   "98.137.11.163",   "CC:33:44:55:66:77"},
+    {"www.facebook.com","157.240.20.35",   "DD:44:55:66:77:88"},
+    {"www.amazon.com",  "205.251.242.103", "EE:55:66:77:88:99"}
+};
+int addressCount = sizeof(table)/sizeof(table[0]);
+
+/* ---------------- search table ---------------- */
+int searchAddress(char url[])
+{
+    int i;
+    for(i = 0; i < addressCount; i++)
+    {
+        if(strcmp(url, table[i].url) == 0)
+            return i;
+    }
+    return -1;
+}
+
+/* =====================================================
+   LOW-LEVEL BINARY CONVERSION FUNCTIONS
+   ===================================================== */
+
+/* Convert a single character (ASCII byte) into 8-bit binary */
+void charToBinary(char c, char *out)
+{
+    int i;
+    unsigned char byte = (unsigned char)c;
+    for(i = 7; i >= 0; i--)
+        out[7 - i] = ((byte >> i) & 1) ? '1' : '0';
+    out[8] = '\0';
+}
+
+/* Convert a decimal number (0-255) into 8-bit binary */
+void decimalToBinary(int num, char *out)
+{
+    int i;
+    unsigned char byte = (unsigned char)num;
+    for(i = 7; i >= 0; i--)
+        out[7 - i] = ((byte >> i) & 1) ? '1' : '0';
+    out[8] = '\0';
+}
+
+/* Convert a single hex digit character ('0'-'9','A'-'F','a'-'f') into 4-bit binary */
+void hexDigitToBinary(char hexChar, char *out)
+{
+    int val, i;
+
+    if(hexChar >= '0' && hexChar <= '9')
+        val = hexChar - '0';
+    else if(hexChar >= 'A' && hexChar <= 'F')
+        val = hexChar - 'A' + 10;
+    else if(hexChar >= 'a' && hexChar <= 'f')
+        val = hexChar - 'a' + 10;
+    else
+        val = 0;
+
+    for(i = 3; i >= 0; i--)
+        out[3 - i] = ((val >> i) & 1) ? '1' : '0';
+    out[4] = '\0';
+}
+
+/* =====================================================
+   HIGH-LEVEL FIELD CONVERSION FUNCTIONS
+   (each one calls the low-level functions above)
+   ===================================================== */
+
+/* Convert 16-bit port number into binary using decimalToBinary on each byte */
+void portToBinary(int port, char output[])
+{
+    char temp[9];
+    int high = (port >> 8) & 0xFF;
+    int low  = port & 0xFF;
+    output[0] = '\0';
+    decimalToBinary(high, temp);
+    strcat(output, temp);
+    strcat(output, " ");
+    decimalToBinary(low, temp);
+    strcat(output, temp);
+}
+
+/* Convert IP "a.b.c.d" into binary octets using decimalToBinary */
+void ipToBinary(char ip[], char output[])
+{
+    char temp[20], bin[9];
+    strcpy(temp, ip);
+    output[0] = '\0';
+    char *token = strtok(temp, ".");
+    while(token != NULL)
+    {
+        int val = atoi(token);
+        decimalToBinary(val, bin);
+        strcat(output, bin);
+        strcat(output, " ");
+        token = strtok(NULL, ".");
+    }
+}
+
+/* Convert MAC "AA:BB:CC:DD:EE:FF" into binary using hexDigitToBinary
+   (each byte = 2 hex digits -> 2 nibbles of 4 bits combined into 8 bits) */
+void macToBinary(char mac[], char output[])
+{
+    char temp[20], nibble1[5], nibble2[5], byteBin[9];
+    strcpy(temp, mac);
+    output[0] = '\0';
+    char *token = strtok(temp, ":");
+    while(token != NULL)
+    {
+        hexDigitToBinary(token[0], nibble1);
+        hexDigitToBinary(token[1], nibble2);
+        strcpy(byteBin, nibble1);
+        strcat(byteBin, nibble2);
+        strcat(output, byteBin);
+        strcat(output, " ");
+        token = strtok(NULL, ":");
+    }
+}
+
+/* Print each character of a string next to its binary, one per line,
+   into the given file, using charToBinary() */
+void printCharBinaryTable(FILE *fout, char input[])
+{
+    int i;
+    char bin[9];
+    for(i = 0; input[i] != '\0'; i++)
+    {
+        charToBinary(input[i], bin);
+        if((unsigned char)input[i] == 16)
+    fprintf(fout,"DLE : %s\n",bin);
+else if((unsigned char)input[i] == 2)
+    fprintf(fout,"STX : %s\n",bin);
+else if((unsigned char)input[i] == 3)
+    fprintf(fout,"ETX : %s\n",bin);
+else
+    fprintf(fout,"%c : %s\n",input[i],bin);
+    }
+}
+
+/* Convert an entire string into one continuous bit-stream (no spaces).
+   This is the actual serialized bit sequence that would go over the wire,
+   and is what CRC must be calculated on. */
+void stringToBitStream(char input[], char output[])
+{
+    int i;
+    char bin[9];
+    output[0] = '\0';
+    for(i = 0; input[i] != '\0'; i++)
+    {
+        charToBinary(input[i], bin);
+        strcat(output, bin);
+    }
+}
+
+/* ---------------- character stuffing ---------------- */
+/* DLE = 16, STX = 2, ETX = 3 (literal values, no macros) */
+void characterStuff(char input[], char output[])
+{
+    int i = 0, j = 0;
+
+    while(input[i] != '\0')
+    {
+        if(strncmp(&input[i], "DLE", 3) == 0)
+        {
+            strcpy(&output[j], "DLE DLE");
+            j += 7;          // "DLE DLE"
+            i += 3;
+        }
+        else if(strncmp(&input[i], "STX", 3) == 0)
+        {
+            strcpy(&output[j], "DLE STX");
+            j += 7;          // "DLE STX"
+            i += 3;
+        }
+        else if(strncmp(&input[i], "ETX", 3) == 0)
+        {
+            strcpy(&output[j], "DLE ETX");
+            j += 7;          // "DLE ETX"
+            i += 3;
+        }
+        else
+        {
+            output[j++] = input[i++];
+        }
+    }
+
+    output[j] = '\0';
+}
+
+/* =====================================================
+   CRC CALCULATION (Modulo-2 / XOR binary division)
+   =====================================================
+   Standard procedure:
+     1. Let the generator polynomial have length n (bits).
+     2. Append (n - 1) zero bits to the data (dividend) -> this is the
+        "n zero appended" data the assignment refers to.
+     3. Perform binary (mod-2) long division of the appended data by
+        the generator polynomial. Mod-2 subtraction is just XOR.
+     4. The remainder (n - 1 bits) is the CRC.
+     5. Transmitted data = original data bits + CRC bits.
+   ===================================================== */
+
+/* Performs mod-2 division of 'dividend' by 'divisor'.
+   'dividend' is modified in place as scratch space is used internally
+   via a copy, so the caller's string is untouched.
+   Result (remainder) of length strlen(divisor)-1 is written into 'remainder'. */
+void mod2Divide(char *dividend, char *divisor, char *remainder)
+{
+    char temp[17200];           /* plain fixed-size scratch copy, no malloc */
+    int dataLen = strlen(dividend);
+    int genLen  = strlen(divisor);
+    int i, j;
+
+    strcpy(temp, dividend);
+
+    /* Long division: slide a window of size genLen across temp.
+       Wherever the leading bit of the current window is '1',
+       XOR the generator into that window (mod-2 subtraction).
+       If the leading bit is '0', XOR-ing with an all-zero pattern
+       would do nothing, so we simply skip -- this is the standard
+       simplification used in mod-2 division. */
+    for(i = 0; i <= dataLen - genLen; i++)
+    {
+        if(temp[i] == '1')
+        {
+            for(j = 0; j < genLen; j++)
+                temp[i + j] = (temp[i + j] == divisor[j]) ? '0' : '1';
+        }
+    }
+
+    /* The remainder is the last (genLen - 1) bits of temp */
+    strcpy(remainder, temp + (dataLen - (genLen - 1)));
+}
+
+/* Computes the CRC for 'data' (a bit-string of 0s/1s) using generator
+   polynomial 'generator' (also a bit-string, e.g. "1101").
+   n = strlen(generator) - 1 zero bits are appended to 'data' before
+   division, per the standard CRC procedure.
+   The resulting CRC (n bits) is written into 'crc'. */
+void calculateCRC(char *data, char *generator, char *crc)
+{
+    char appendedData[17200];   /* plain fixed-size buffer, no malloc */
+    int dataLen = strlen(data);
+    int genLen  = strlen(generator);
+    int n       = genLen - 1;              /* degree of polynomial */
+    int appendedLen = dataLen + n;
+    int i;
+
+    strcpy(appendedData, data);
+    for(i = dataLen; i < appendedLen; i++)
+        appendedData[i] = '0';             /* append n zero bits */
+    appendedData[appendedLen] = '\0';
+
+    mod2Divide(appendedData, generator, crc);   /* crc gets n bits */
+}
+/* ================================================================ */
+
+int main()
+{
+    char filename[100];
+    char srcURL[50], destURL[50];
+    char data[1000];
+    char stuffedData[2100];
+    char binBuf[80];
+    FILE *fp, *fout;
+    int srcIndex, destIndex;
+    int srcPort, destPort;
+    int ch, idx = 0;
+
+    char generator[64];          /* generator polynomial as bit string, e.g. "1101" */
+    char dataBits[17000];        /* bit-stream of the (stuffed) body */
+    char crc[64];                /* computed CRC bits */
+    char dataPlusCRC[17100];     /* final transmitted bit-stream = data bits + CRC */
+
+    srand((unsigned int)time(NULL));
+
+    printf("Enter file name: ");
+    scanf("%s", filename);
+
+    fp = fopen(filename, "r");
+    if(fp == NULL)
+    {
+        printf("Error: cannot open input file %s\n", filename);
+        return 1;
+    }
+
+    while((ch = fgetc(fp)) != EOF)
+        data[idx++] = (char)ch;
+    data[idx] = '\0';
+    fclose(fp);
+
+    printf("Enter Source URL : ");
+    scanf("%s", srcURL);
+    printf("Enter Destination URL : ");
+    scanf("%s", destURL);
+
+    srcIndex  = searchAddress(srcURL);
+    destIndex = searchAddress(destURL);
+
+    if(srcIndex == -1 || destIndex == -1)
+    {
+        printf("Error: URL not found in address table\n");
+        return 1;
+    }
+
+    printf("Enter Generator Polynomial (bit string, e.g. 1101) : ");
+    scanf("%s", generator);
+
+    srcPort  = (rand() % 64512) + 1024;
+    destPort = (rand() % 64512) + 1024;
+
+    characterStuff(data, stuffedData);
+
+    /* Build the actual bit-stream of the (stuffed) body -- this is
+       the "data / dividend" the CRC is calculated over */
+    stringToBitStream(stuffedData, dataBits);
+
+    /* CRC = remainder after dividing (data bits + n zero bits) by generator */
+    calculateCRC(dataBits, generator, crc);
+
+    /* Final transmitted sequence = data bits + CRC bits */
+    strcpy(dataPlusCRC, dataBits);
+    strcat(dataPlusCRC, crc);
+
+    fout = fopen("sender_output.txt", "w");
+    if(fout == NULL)
+    {
+        printf("Error creating output file\n");
+        return 1;
+    }
+
+    fprintf(fout, "===================== BISYNC FRAME (SENDER SIDE) =====================\n\n");
+    fprintf(fout, "FRAME FORMAT:\n");
+    fprintf(fout, "+-----+-----+-----+--------+-----+------+-----+------+\n");
+    fprintf(fout, "| SYN | SYN | SOH | HEADER | STX | BODY | ETX | CRC  |\n");
+    fprintf(fout, "+-----+-----+-----+--------+-----+------+-----+------+\n\n");
+
+    fprintf(fout, "------------------- SYN, SYN, SOH -------------------\n");
+    fprintf(fout, "SYN : 00010110\n");
+    fprintf(fout, "SYN : 00010110\n");
+    fprintf(fout, "SOH : 00000001\n\n");
+
+    fprintf(fout, "------------------------- HEADER FIELDS -------------------------\n");
+
+    fprintf(fout, "Source Port (Binary)      : ");
+    portToBinary(srcPort, binBuf);
+    fprintf(fout, "%s\n", binBuf);
+
+    fprintf(fout, "Destination Port (Binary) : ");
+    portToBinary(destPort, binBuf);
+    fprintf(fout, "%s\n\n", binBuf);
+
+    fprintf(fout, "Source IP (Binary)        : ");
+    ipToBinary(table[srcIndex].ip, binBuf);
+    fprintf(fout, "%s\n", binBuf);
+
+    fprintf(fout, "Destination IP (Binary)   : ");
+    ipToBinary(table[destIndex].ip, binBuf);
+    fprintf(fout, "%s\n\n", binBuf);
+
+    fprintf(fout, "Source MAC (Binary)       : ");
+    macToBinary(table[srcIndex].mac, binBuf);
+    fprintf(fout, "%s\n", binBuf);
+
+    fprintf(fout, "Destination MAC (Binary)  : ");
+    macToBinary(table[destIndex].mac, binBuf);
+    fprintf(fout, "%s\n\n", binBuf);
+
+    fprintf(fout, "---------------------------- STX ----------------------------------\n");
+    fprintf(fout, "STX : 00000010\n\n");
+
+    fprintf(fout, "---------------------------- BODY ---------------------------------\n");
+    fprintf(fout, "Original Body (Character : Binary)\n");
+    printCharBinaryTable(fout, data);
+    fprintf(fout, "\n");
+
+    fprintf(fout, "Stuffed Body (Character : Binary)\n");
+    printCharBinaryTable(fout, stuffedData);
+    fprintf(fout, "\n");
+
+    fprintf(fout, "---------------------------- ETX ----------------------------------\n");
+    fprintf(fout, "ETX : 00000011\n\n");
+
+    fprintf(fout, "---------------------------- CRC ---------------------------------\n");
+    fprintf(fout, "Generator Polynomial          : %s\n", generator);
+    fprintf(fout, "Degree of Polynomial (n)      : %d\n", (int)strlen(generator) - 1);
+    fprintf(fout, "Data bit-stream length        : %d bits\n", (int)strlen(dataBits));
+    fprintf(fout, "Data + %d appended zero bits  : (dividend used for division)\n", (int)strlen(generator) - 1);
+    fprintf(fout, "Computed CRC (remainder)      : %s\n\n", crc);
+    fprintf(fout, "Transmitted = Data + CRC:\n%s\n", dataPlusCRC);
+
+    fclose(fout);
+
+    printf("\nFrame successfully created.\n");
+    printf("Output written to: sender_output.txt\n");
+
+    return 0;
+}
