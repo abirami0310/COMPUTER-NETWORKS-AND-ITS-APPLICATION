@@ -1,0 +1,98 @@
+#include <stdio.h>
+int r,c,i,j,errflag;
+int data[10][10];
+int rp[10],cp[10],corner;
+int rrp[10],rcp[10],rcorner;
+int ch,ri,rj;
+void receive()
+{
+    FILE *fp;
+    fp=fopen("channel.dat","rb");
+    fread(&r,sizeof(int),1,fp);
+    fread(&c,sizeof(int),1,fp);
+    fread(data,sizeof(int),100,fp);
+    fread(rp,sizeof(int),10,fp);
+    fread(cp,sizeof(int),10,fp);
+    fread(&corner,sizeof(int),1,fp);
+    fclose(fp);
+}
+void display()
+{
+    printf("\nReceived data:\n");
+    for(i=0;i<r;i++)
+    {
+        for(j=0;j<c;j++)
+            printf("%d ",data[i][j]);
+        printf("| %d\n",rp[i]);
+    }
+    for(j=0;j<c;j++)
+        printf("--");
+    printf("\n");
+    for(j=0;j<c;j++)
+        printf("%d ",cp[j]);
+    printf("| %d\n",corner);
+}
+void check()
+{
+    errflag=0;
+    for(i=0;i<r;i++)
+    {
+        rrp[i]=0;
+        for(j=0;j<c;j++)
+            rrp[i]=rrp[i]^data[i][j];
+        if(rrp[i]!=rp[i])
+        {
+            printf("Row %d parity mismatch\n",i+1);
+            errflag=1;
+        }
+    }
+    for(j=0;j<c;j++)
+    {
+        rcp[j]=0;
+        for(i=0;i<r;i++)
+            rcp[j]=rcp[j]^data[i][j];
+        if(rcp[j]!=cp[j])
+        {
+            printf("Column %d parity mismatch\n",j+1);
+            errflag=1;
+        }
+    }
+    rcorner=0;
+    for(j=0;j<c;j++)
+        rcorner=rcorner^rcp[j];
+    if(rcorner!=corner)
+    {
+        printf("Corner parity mismatch\n");
+        errflag=1;
+    }
+    if(errflag==0)
+        printf("\nNo error detected.\n");
+    else
+        printf("\nError detected in data.\n");
+}
+void modify()
+{
+    printf("\nEnter row index of bit to flip (1 to %d): ",r);
+    scanf("%d",&ri);
+    printf("Enter column index of bit to flip (1 to %d): ",c);
+    scanf("%d",&rj);
+    data[ri][rj]=1-data[ri][rj];
+    printf("Bit changed. Rechecking parity...\n");
+}
+int main()
+{
+    receive();
+    display();
+    check();
+    printf("\nDo you want to change a bit? (1-yes, 0-no): ");
+    scanf("%d",&ch);
+    while(ch==1)
+    {
+        modify();
+        display();
+        check();
+        printf("\nDo you want to change another bit? (1-yes, 0-no): ");
+        scanf("%d",&ch);
+    }
+    return 0;
+}
