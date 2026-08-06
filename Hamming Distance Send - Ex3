@@ -1,0 +1,100 @@
+#include <stdio.h>
+int m,n,r,i,j,k,p,val;
+int data[20];
+int cw[20];
+int powerOfTwo(int pow)
+{
+    int result = 1;
+    int x;
+    for( x = 0; x < pow; x++) {
+        result *= 2;
+    }
+    return result;
+}
+int isBitSet(int num, int bitPos)
+{
+    int temp = num;
+    int x;
+    for( x = 0; x < bitPos; x++) {
+        temp /= 2;
+    }
+    return (temp % 2 == 1);
+}
+void getdata()
+{
+    printf("Enter number of data bits: ");
+    scanf("%d",&m);
+    printf("Enter %d data bits:\n",m);
+    for(i=0;i<m;i++)
+        scanf("%d",&data[i]);
+}
+void calcr()
+{
+    r=0;
+    while(powerOfTwo(r) < m+r+1)
+        r++;
+    n=m+r;
+    printf("\nRedundancy bits required (r) = %d\n",r);
+    printf("Total codeword length (n) = %d\n",n);
+}
+void placebits()
+{
+    j=0;
+    for(i=1;i<=n;i++)
+    {
+        int isPowerOfTwo = 0;
+        for(k=0; k<=r; k++) {
+            if(i == powerOfTwo(k)) {
+                isPowerOfTwo = 1;
+                break;
+            }
+        }
+
+        if(isPowerOfTwo)
+            cw[i]=0;
+        else
+        {
+            cw[i]=data[j];
+            j++;
+        }
+    }
+}
+void calcparity()
+{
+    for(k=0;k<r;k++)
+    {
+        p = powerOfTwo(k);
+        val=0;
+        for(i=1;i<=n;i++)
+            if(isBitSet(i, k))
+                val=val^cw[i];
+        cw[p]=val;
+    }
+}
+void display()
+{
+    printf("\nCodeword (position 1 to %d):\n",n);
+    for(i=1;i<=n;i++)
+        printf("%d ",cw[i]);
+    printf("\n");
+}
+void send()
+{
+    FILE *fp;
+    fp=fopen("hamming.dat","wb");
+    fwrite(&n,sizeof(int),1,fp);
+    fwrite(&r,sizeof(int),1,fp);
+    fwrite(cw,sizeof(int),20,fp);
+    fclose(fp);
+    printf("\nCodeword sent to channel (hamming.dat).\n");
+}
+int main()
+{
+    getdata();
+    calcr();
+    placebits();
+    calcparity();
+    display();
+    send();
+    return 0;
+}
