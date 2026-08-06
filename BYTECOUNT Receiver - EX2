@@ -1,0 +1,551 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+
+typedef struct
+{
+    char url[50];
+    char ip[20];
+    char mac[20];
+} AddressTable;
+
+AddressTable table[] =
+{
+    {"www.gmail.com",   "142.250.183.5",   "AA:11:22:33:44:55"},
+    {"www.google.com",  "142.250.183.14",  "BB:22:33:44:55:66"},
+    {"www.yahoo.com",   "98.137.11.163",   "CC:33:44:55:66:77"},
+    {"www.facebook.com","157.240.20.35",   "DD:44:55:66:77:88"},
+    {"www.amazon.com",  "205.251.242.103", "EE:55:66:77:88:99"}
+};
+int addressCount = sizeof(table)/sizeof(table[0]);
+
+/* ---------------- search table ---------------- */
+int searchAddress(char url[])
+{
+    int i;
+    for(i = 0; i < addressCount; i++)
+    {
+        if(strcmp(url, table[i].url) == 0)
+            return i;
+    }
+    return -1;
+}
+
+/* =====================================================
+   LOW-LEVEL BINARY CONVERSION FUNCTIONS
+   (same as sender, except countToBinary is not needed
+   here -- the receiver EXTRACTS Count from the frame
+   rather than generating it)
+   ===================================================== */
+
+/* Convert a single character (ASCII byte) into 8-bit binary */
+void charToBinary(char c, char *out)
+{
+    int i;
+    unsigned char byte = (unsigned char)c;
+    for(i = 7; i >= 0; i--)
+        out[7 - i] = ((byte >> i) & 1) ? '1' : '0';
+    out[8] = '\0';
+}
+
+/* Convert a decimal number (0-255) into 8-bit binary */
+void decimalToBinary(int num, char *out)
+{
+    int i;
+    unsigned char byte = (unsigned char)num;
+    for(i = 7; i >= 0; i--)
+        out[7 - i] = ((byte >> i) & 1) ? '1' : '0';
+    out[8] = '\0';
+}
+
+/* Convert a hex digit character into 4-bit binary */
+void hexDigitToBinary(char hexChar, char *out)
+{
+    int val, i;
+
+    if(hexChar >= '0' && hexChar <= '9')
+        val = hexChar - '0';
+    else if(hexChar >= 'A' && hexChar <= 'F')
+        val = hexChar - 'A' + 10;
+    else if(hexChar >= 'a' && hexChar <= 'f')
+        val = hexChar - 'a' + 10;
+    else
+        val = 0;
+
+    for(i = 3; i >= 0; i--)
+        out[3 - i] = ((val >> i) & 1) ? '1' : '0';
+    out[4] = '\0';
+}
+
+/* Convert an 8-bit class/type code into binary */
+void classToBinary(int num, char *out)
+{
+    decimalToBinary(num, out);
+}
+
+/* =====================================================
+   HIGH-LEVEL FIELD CONVERSION FUNCTIONS
+   (identical to sender's)
+   ===================================================== */
+
+/* Convert 16-bit port number into binary using decimalToBinary on each byte */
+void portToBinary(int port, char output[])
+{
+    char temp[9];
+    int high = (port >> 8) & 0xFF;
+    int low  = port & 0xFF;
+    output[0] = '\0';
+    decimalToBinary(high, temp);
+    strcat(output, temp);
+    strcat(output, " ");
+    decimalToBinary(low, temp);
+    strcat(output, temp);
+}
+
+/* Convert IP "a.b.c.d" into binary octets using decimalToBinary */
+void ipToBinary(char ip[], char output[])
+{
+    char temp[20], bin[9];
+    strcpy(temp, ip);
+    output[0] = '\0';
+    char *token = strtok(temp, ".");
+    while(token != NULL)
+    {
+        int val = atoi(token);
+        decimalToBinary(val, bin);
+        strcat(output, bin);
+        strcat(output, " ");
+        token = strtok(NULL, ".");
+    }
+}
+
+/* Convert MAC "AA:BB:CC:DD:EE:FF" into binary using hexDigitToBinary
+   (each byte = 2 hex digits -> 2 nibbles of 4 bits combined into 8 bits) */
+void macToBinary(char mac[], char output[])
+{
+    char temp[20], nibble1[5], nibble2[5], byteBin[9];
+    strcpy(temp, mac);
+    output[0] = '\0';
+    char *token = strtok(temp, ":");
+    while(token != NULL)
+    {
+        hexDigitToBinary(token[0], nibble1);
+        hexDigitToBinary(token[1], nibble2);
+        strcpy(byteBin, nibble1);
+        strcat(byteBin, nibble2);
+        strcat(output, byteBin);
+        strcat(output, " ");
+        token = strtok(NULL, ":");
+    }
+}
+
+/* =====================================================
+   LOW-LEVEL BINARY -> CHARACTER CONVERSION
+   (reverse of charToBinary above)
+   ===================================================== */
+
+/* Convert an 8-bit binary string like "01000001" back into a character */
+char binaryToChar(char *bin)
+{
+    int i, val = 0;
+    for(i = 0; i < 8; i++)
+    {
+        val = val << 1;
+        if(bin[i] == '1')
+            val = val | 1;
+    }
+    return (char)val;
+}
+
+/* =====================================================
+   FRAME PARSING / EXTRACT FUNCTIONS
+   The receiver does NOT build the Count, Body, generator
+   polynomial, or CRC fields itself -- it only reads /
+   extracts the ones the sender already placed in the
+   frame file.
+   ===================================================== */
+
+/* Find the line "No. of bytes in Body : X" and return X */
+int extractCount(FILE *fin)
+{
+    char line[300];
+    int count = -1;
+
+    rewind(fin);
+    while(fgets(line, sizeof(line), fin) != NULL)
+    {
+        if(strncmp(line, "No. of bytes in Body :", 22) == 0)
+        {
+            sscanf(line, "No. of bytes in Body : %d", &count);
+            break;
+        }
+    }
+    return count;
+}
+
+/* Locate the "Body (Character : Binary)" section and pull out every
+   "label : binarystring" line into an array. The label (a real
+   character, or a symbolic name like LF/CR/TAB/CTRL that the sender
+   uses for control bytes) is ignored - the receiver reconstructs
+   the actual byte purely from the 8-bit binary code, via strstr()
+   on " : " rather than %c, so it never depends on a raw control
+   byte surviving inside the text frame. Returns how many
+   binary codes were actually found in the frame. */
+int extractBody(FILE *fin, char binaries[][9])
+{
+    char line[300];
+    int found = 0;
+    int inBody = 0;
+
+    rewind(fin);
+    while(fgets(line, sizeof(line), fin) != NULL)
+    {
+        if(strncmp(line, "Body (Character : Binary)", 25) == 0)
+        {
+            inBody = 1;
+            continue;
+        }
+        if(inBody)
+        {
+            /* blank line marks the end of the Body section */
+            if(line[0] == '\n' || line[0] == '\r')
+                break;
+
+            char *sep = strstr(line, " : ");
+            if(sep != NULL)
+            {
+                strncpy(binaries[found], sep + 3, 8);
+                binaries[found][8] = '\0';
+                found++;
+            }
+        }
+    }
+    return found;
+}
+
+/* Find the line "Generator Polynomial ... : <bits>" and pull out the
+   generator polynomial bit string the sender used. Returns 1 if found. */
+int extractGenerator(FILE *fin, char *generator)
+{
+    char line[300];
+
+    rewind(fin);
+    while(fgets(line, sizeof(line), fin) != NULL)
+    {
+        if(strncmp(line, "Generator Polynomial", 20) == 0)
+        {
+            char *sep = strstr(line, " : ");
+            if(sep != NULL)
+            {
+                sscanf(sep + 3, "%s", generator);
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+/* Find the "Transmitted Data + CRC:" marker and read the bit-stream
+   that appears on the very next line. Returns 1 if found. */
+int extractDataPlusCRC(FILE *fin, char *bits)
+{
+    char line[17200];
+
+    rewind(fin);
+    while(fgets(line, sizeof(line), fin) != NULL)
+    {
+        if(strncmp(line, "Transmitted Data + CRC:", 23) == 0)
+        {
+            if(fgets(line, sizeof(line), fin) != NULL)
+            {
+                int len = (int)strlen(line);
+                while(len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r'))
+                {
+                    line[len - 1] = '\0';
+                    len--;
+                }
+                strcpy(bits, line);
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+/* =====================================================
+   CRC CHECKING (Modulo-2 / XOR binary division)
+   =====================================================
+   Take the received Data+CRC bit-stream as the dividend and divide
+   it by the SAME generator polynomial the sender used. A remainder
+   of all zero bits means no error was introduced in transit; any
+   non-zero remainder means an error was detected.
+   No malloc is used - a plain fixed-size array is enough. */
+void mod2Divide(char *dividend, char *divisor, char *remainder)
+{
+    char temp[17200];
+    int dataLen = strlen(dividend);
+    int genLen  = strlen(divisor);
+    int i, j;
+
+    strcpy(temp, dividend);
+
+    for(i = 0; i <= dataLen - genLen; i++)
+    {
+        if(temp[i] == '1')
+        {
+            for(j = 0; j < genLen; j++)
+                temp[i + j] = (temp[i + j] == divisor[j]) ? '0' : '1';
+        }
+    }
+
+    strcpy(remainder, temp + (dataLen - (genLen - 1)));
+}
+
+/* Returns 1 if every character in 'bits' is '0', else 0 */
+int isAllZero(char *bits)
+{
+    int i;
+    for(i = 0; bits[i] != '\0'; i++)
+    {
+        if(bits[i] != '0')
+            return 0;
+    }
+    return 1;
+}
+
+/* Flips (toggles) a single bit at 1-based position 'pos' in 'bits' */
+void flipBit(char *bits, int pos)
+{
+    int len = strlen(bits);
+    if(pos < 1 || pos > len)
+        return;
+    bits[pos - 1] = (bits[pos - 1] == '0') ? '1' : '0';
+}
+
+/* ================================================================
+   BYTE COUNT APPROACH (DDCMP) -- RECEIVER SIDE
+   The receiver rebuilds its own header display (Class, header
+   fields) the same way the sender does, but Count, Body, the
+   Generator Polynomial, and the transmitted Data+CRC are never
+   generated here - they are EXTRACTED from the received frame
+   file. Two independent checks are then performed:
+     1. Framing check  - does Count match the actual Body length?
+     2. CRC check      - does dividing Data+CRC by the generator
+                         polynomial give an all-zero remainder?
+   The message is only reconstructed if BOTH checks pass.
+   ================================================================ */
+
+int main()
+{
+    char filename[100];
+    char srcURL[50], destURL[50];
+    char binBuf[120];
+    char classBin[9];
+    FILE *fin, *fout;
+    int srcIndex, destIndex;
+    int srcPort, destPort;
+
+    int declaredCount;      /* value receiver reads out of the Count field */
+    int actualBytes;        /* number of body bytes actually present in the frame */
+    int simulateError, corruption;
+    char binaries[1000][9];
+    int i;
+
+    char generator[64];          /* generator polynomial read from the frame */
+    char receivedBits[17200];    /* received Data+CRC bit-stream (dividend) */
+    char remainder[64];          /* result of the CRC division */
+    char crcErrorChoice;         /* 'y' or 'n' -- simulate a CRC bit error or not */
+    int  crcErrorPos;            /* bit position to flip, if simulating error */
+
+    srand((unsigned int)time(NULL));
+
+    printf("Enter received frame file name (e.g. send_output.txt): ");
+    scanf("%s", filename);
+
+    fin = fopen(filename, "r");
+    if(fin == NULL)
+    {
+        printf("Error: cannot open frame file %s\n", filename);
+        return 1;
+    }
+
+    declaredCount = extractCount(fin);
+    if(declaredCount == -1)
+    {
+        printf("Error: Count field not found in frame\n");
+        fclose(fin);
+        return 1;
+    }
+
+    actualBytes = extractBody(fin, binaries);
+
+    if(!extractGenerator(fin, generator))
+    {
+        printf("Error: Generator Polynomial not found in frame\n");
+        fclose(fin);
+        return 1;
+    }
+
+    if(!extractDataPlusCRC(fin, receivedBits))
+    {
+        printf("Error: Transmitted Data+CRC bit-stream not found in frame\n");
+        fclose(fin);
+        return 1;
+    }
+
+    fclose(fin);
+
+    printf("Enter Source URL : ");
+    scanf("%s", srcURL);
+    printf("Enter Destination URL : ");
+    scanf("%s", destURL);
+
+    srcIndex  = searchAddress(srcURL);
+    destIndex = searchAddress(destURL);
+
+    if(srcIndex == -1 || destIndex == -1)
+    {
+        printf("Error: URL not found in address table\n");
+        return 1;
+    }
+
+    srcPort  = (rand() % 64512) + 1024;
+    destPort = (rand() % 64512) + 1024;
+
+    printf("Count field read from frame : %d\n", declaredCount);
+    printf("Do you want to simulate a corrupted Count field? (1 = yes, 0 = no): ");
+    scanf("%d", &simulateError);
+
+    if(simulateError)
+    {
+        printf("Enter a corruption offset to add/subtract from Count (e.g. 3 or -2): ");
+        scanf("%d", &corruption);
+        declaredCount += corruption;
+        if(declaredCount < 0)
+            declaredCount = 0;
+    }
+
+    printf("Generator Polynomial read from frame : %s\n", generator);
+    printf("Do you want to simulate a transmission error on the Data+CRC bits? (y/n) : ");
+    scanf(" %c", &crcErrorChoice);
+
+    if(crcErrorChoice == 'y' || crcErrorChoice == 'Y')
+    {
+        printf("Enter bit position to flip (1 to %d) : ", (int)strlen(receivedBits));
+        scanf("%d", &crcErrorPos);
+        flipBit(receivedBits, crcErrorPos);
+    }
+
+    /* Divide the received Data+CRC by the generator polynomial */
+    mod2Divide(receivedBits, generator, remainder);
+
+    fout = fopen("rec_output.txt", "w");
+    if(fout == NULL)
+    {
+        printf("Error creating output file\n");
+        return 1;
+    }
+
+    fprintf(fout, "================== DDCMP FRAME (RECEIVER SIDE) ==================\n\n");
+    fprintf(fout, "FRAME FORMAT:\n");
+    fprintf(fout, "+-----+-----+-------+-------+--------+------+-----+\n");
+    fprintf(fout, "| SYN | SYN | Class | Count | Header | Body | CRC |\n");
+    fprintf(fout, "|  8  |  8  |   8   |  14   |   42   |  n   | 16  |\n");
+    fprintf(fout, "+-----+-----+-------+-------+--------+------+-----+\n\n");
+
+    fprintf(fout, "------------------------- SYN, SYN -------------------------\n");
+    fprintf(fout, "SYN : 00010110\n");
+    fprintf(fout, "SYN : 00010110\n\n");
+
+    fprintf(fout, "------------------------- CLASS ------------------------------\n");
+    classToBinary(1, classBin);           /* 1 = data message class */
+    fprintf(fout, "Class (Binary) : %s\n\n", classBin);
+
+    fprintf(fout, "------------------------- COUNT (extracted) --------------------\n");
+    fprintf(fout, "Count field says   : %d bytes\n", declaredCount);
+    fprintf(fout, "Bytes actually present in Body : %d bytes\n\n", actualBytes);
+
+    fprintf(fout, "------------------------- HEADER FIELDS -------------------------\n");
+
+    fprintf(fout, "Source Port (Binary)      : ");
+    portToBinary(srcPort, binBuf);
+    fprintf(fout, "%s\n", binBuf);
+
+    fprintf(fout, "Destination Port (Binary) : ");
+    portToBinary(destPort, binBuf);
+    fprintf(fout, "%s\n\n", binBuf);
+
+    fprintf(fout, "Source IP (Binary)        : ");
+    ipToBinary(table[srcIndex].ip, binBuf);
+    fprintf(fout, "%s\n", binBuf);
+
+    fprintf(fout, "Destination IP (Binary)   : ");
+    ipToBinary(table[destIndex].ip, binBuf);
+    fprintf(fout, "%s\n\n", binBuf);
+
+    fprintf(fout, "Source MAC (Binary)       : ");
+    macToBinary(table[srcIndex].mac, binBuf);
+    fprintf(fout, "%s\n", binBuf);
+
+    fprintf(fout, "Destination MAC (Binary)  : ");
+    macToBinary(table[destIndex].mac, binBuf);
+    fprintf(fout, "%s\n\n", binBuf);
+
+    /* -------- CHECK 1 : framing (byte count approach) -------- */
+    if(declaredCount != actualBytes)
+    {
+        fprintf(fout, "---------------------------- BODY ---------------------------------\n");
+        fprintf(fout, "*** FRAMING ERROR ***\n");
+        fprintf(fout, "The Count field is corrupted / does not match the actual\n");
+        fprintf(fout, "number of bytes in the Body, so the receiver cannot correctly\n");
+        fprintf(fout, "determine where this frame ends and the next one begins.\n\n");
+
+        printf("\n*** FRAMING ERROR DETECTED ***\n");
+        printf("(Count = %d, actual body bytes = %d)\n", declaredCount, actualBytes);
+    }
+    else
+    {
+        fprintf(fout, "---------------------------- BODY ---------------------------------\n");
+        fprintf(fout, "Count matches actual Body length - no framing error.\n\n");
+
+        /* -------- CHECK 2 : CRC (independent of framing) -------- */
+        fprintf(fout, "---------------------------- CRC / ERROR CHECK ---------------------------------\n");
+        fprintf(fout, "Generator Polynomial            : %s\n", generator);
+        fprintf(fout, "Received Data+CRC (dividend)    : %s\n", receivedBits);
+        if(crcErrorChoice == 'y' || crcErrorChoice == 'Y')
+            fprintf(fout, "Simulated error introduced at bit position : %d\n", crcErrorPos);
+        else
+            fprintf(fout, "No error simulated (frame checked as received)\n");
+        fprintf(fout, "Remainder after division         : %s\n\n", remainder);
+
+        if(isAllZero(remainder))
+        {
+            fprintf(fout, "RESULT : No error detected. Frame accepted.\n\n");
+            printf("\nCRC Check: No error detected. Frame accepted.\n");
+
+            fprintf(fout, "Extracted Body (Binary : Character)\n");
+            for(i = 0; i < declaredCount; i++)
+                fprintf(fout, "%s : %c\n", binaries[i], binaryToChar(binaries[i]));
+
+            fprintf(fout, "\n---------------------------- MESSAGE --------------------------------\n");
+            fprintf(fout, "Reconstructed Original Message:\n");
+            for(i = 0; i < declaredCount; i++)
+                fprintf(fout, "%c", binaryToChar(binaries[i]));
+            fprintf(fout, "\n");
+
+            printf("Message reconstructed successfully.\n");
+        }
+        else
+        {
+            fprintf(fout, "RESULT : Error detected in received frame! Frame rejected / retransmission requested.\n");
+            printf("\nCRC Check: Error detected in received frame!\n");
+        }
+    }
+
+    fclose(fout);
+
+    printf("Output written to: rec_output.txt\n");
+
+    return 0;
+}
