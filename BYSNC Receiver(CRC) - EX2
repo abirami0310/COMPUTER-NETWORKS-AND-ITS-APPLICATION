@@ -1,0 +1,405 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+
+typedef struct
+{
+    char url[50];
+    char ip[20];
+    char mac[20];
+} AddressTable;
+
+AddressTable table[] =
+{
+    {"www.gmail.com",   "142.250.183.5",   "AA:11:22:33:44:55"},
+    {"www.google.com",  "142.250.183.14",  "BB:22:33:44:55:66"},
+    {"www.yahoo.com",   "98.137.11.163",   "CC:33:44:55:66:77"},
+    {"www.facebook.com","157.240.20.35",   "DD:44:55:66:77:88"},
+    {"www.amazon.com",  "205.251.242.103", "EE:55:66:77:88:99"}
+};
+int addressCount = sizeof(table)/sizeof(table[0]);
+
+/* ---------------- search table ---------------- */
+int searchAddress(char url[])
+{
+    int i;
+    for(i = 0; i < addressCount; i++)
+    {
+        if(strcmp(url, table[i].url) == 0)
+            return i;
+    }
+    return -1;
+}
+
+/* =====================================================
+   LOW-LEVEL BINARY CONVERSION FUNCTIONS
+   ===================================================== */
+
+/* Convert a single character (ASCII byte) into 8-bit binary */
+void charToBinary(char c, char *out)
+{
+    int i;
+    unsigned char byte = (unsigned char)c;
+    for(i = 7; i >= 0; i--)
+        out[7 - i] = ((byte >> i) & 1) ? '1' : '0';
+    out[8] = '\0';
+}
+
+/* Convert a decimal number (0-255) into 8-bit binary */
+void decimalToBinary(int num, char *out)
+{
+    int i;
+    unsigned char byte = (unsigned char)num;
+    for(i = 7; i >= 0; i--)
+        out[7 - i] = ((byte >> i) & 1) ? '1' : '0';
+    out[8] = '\0';
+}
+
+/* Convert a single hex digit character ('0'-'9','A'-'F','a'-'f') into 4-bit binary */
+void hexDigitToBinary(char hexChar, char *out)
+{
+    int val, i;
+
+    if(hexChar >= '0' && hexChar <= '9')
+        val = hexChar - '0';
+    else if(hexChar >= 'A' && hexChar <= 'F')
+        val = hexChar - 'A' + 10;
+    else if(hexChar >= 'a' && hexChar <= 'f')
+        val = hexChar - 'a' + 10;
+    else
+        val = 0;
+
+    for(i = 3; i >= 0; i--)
+        out[3 - i] = ((val >> i) & 1) ? '1' : '0';
+    out[4] = '\0';
+}
+
+/* =====================================================
+   HIGH-LEVEL FIELD CONVERSION FUNCTIONS
+   ===================================================== */
+
+void portToBinary(int port, char output[])
+{
+    char temp[9];
+    int high = (port >> 8) & 0xFF;
+    int low  = port & 0xFF;
+    output[0] = '\0';
+    decimalToBinary(high, temp);
+    strcat(output, temp);
+    strcat(output, " ");
+    decimalToBinary(low, temp);
+    strcat(output, temp);
+}
+
+void ipToBinary(char ip[], char output[])
+{
+    char temp[20], bin[9];
+    strcpy(temp, ip);
+    output[0] = '\0';
+    char *token = strtok(temp, ".");
+    while(token != NULL)
+    {
+        int val = atoi(token);
+        decimalToBinary(val, bin);
+        strcat(output, bin);
+        strcat(output, " ");
+        token = strtok(NULL, ".");
+    }
+}
+
+void macToBinary(char mac[], char output[])
+{
+    char temp[20], nibble1[5], nibble2[5], byteBin[9];
+    strcpy(temp, mac);
+    output[0] = '\0';
+    char *token = strtok(temp, ":");
+    while(token != NULL)
+    {
+        hexDigitToBinary(token[0], nibble1);
+        hexDigitToBinary(token[1], nibble2);
+        strcpy(byteBin, nibble1);
+        strcat(byteBin, nibble2);
+        strcat(output, byteBin);
+        strcat(output, " ");
+        token = strtok(NULL, ":");
+    }
+}
+
+/* Print each character of a string next to its binary, one per line */
+void printCharBinaryTable(FILE *fout, char input[])
+{
+    int i;
+    char bin[9];
+    for(i = 0; input[i] != '\0'; i++)
+    {
+        charToBinary(input[i], bin);
+        fprintf(fout, "%c : %s\n", input[i], bin);
+    }
+}
+
+/* =====================================================
+   CHARACTER DESTUFFING (Receiver side operation)
+   Removes the extra DLE (16) that was inserted before
+   DLE / STX / ETX during stuffing at the sender.
+   ===================================================== */
+void characterDestuff(char input[], char output[])
+{
+    int i = 0, j = 0;
+
+    while(input[i] != '\0')
+    {
+        /* DLE DLE -> DLE */
+        if(strncmp(&input[i], "DLE DLE", 7) == 0)
+        {
+            output[j++] = 'D';
+            output[j++] = 'L';
+            output[j++] = 'E';
+            i += 7;
+        }
+
+        /* DLE STX -> STX */
+        else if(strncmp(&input[i], "DLE STX", 7) == 0)
+        {
+            output[j++] = 'S';
+            output[j++] = 'T';
+            output[j++] = 'X';
+            i += 7;
+        }
+
+        /* DLE ETX -> ETX */
+        else if(strncmp(&input[i], "DLE ETX", 7) == 0)
+        {
+            output[j++] = 'E';
+            output[j++] = 'T';
+            output[j++] = 'X';
+            i += 7;
+        }
+
+        else
+        {
+            output[j++] = input[i++];
+        }
+    }
+
+    output[j] = '\0';
+}
+
+/* =====================================================
+   CRC CHECKING (Receiver side) -- Modulo-2 / XOR division
+   =====================================================
+   Standard receiver procedure:
+     1. Take the received bit-stream: Data + CRC (this whole thing
+        is the dividend now, exactly as it arrived over the wire).
+     2. Divide it by the SAME generator polynomial the sender used.
+     3. If the remainder is all zero bits -> no error was introduced
+        during transmission (frame accepted).
+     4. If the remainder is non-zero -> an error was detected in the
+        frame (frame rejected / retransmission requested).
+   ===================================================== */
+
+/* Performs mod-2 division of 'dividend' by 'divisor'.
+   Result (remainder) of length strlen(divisor)-1 is written into 'remainder'. */
+void mod2Divide(char *dividend, char *divisor, char *remainder)
+{
+    char temp[17200];           /* plain fixed-size scratch copy, no malloc */
+    int dataLen = strlen(dividend);
+    int genLen  = strlen(divisor);
+    int i, j;
+
+    strcpy(temp, dividend);
+
+    for(i = 0; i <= dataLen - genLen; i++)
+    {
+        if(temp[i] == '1')
+        {
+            for(j = 0; j < genLen; j++)
+                temp[i + j] = (temp[i + j] == divisor[j]) ? '0' : '1';
+        }
+    }
+
+    strcpy(remainder, temp + (dataLen - (genLen - 1)));
+}
+
+/* Returns 1 if every character in 'bits' is '0', else 0 */
+int isAllZero(char *bits)
+{
+    int i;
+    for(i = 0; bits[i] != '\0'; i++)
+    {
+        if(bits[i] != '0')
+            return 0;
+    }
+    return 1;
+}
+
+/* Flips (toggles) a single bit at 1-based position 'pos' in 'bits' */
+void flipBit(char *bits, int pos)
+{
+    int len = strlen(bits);
+    if(pos < 1 || pos > len)
+        return;
+    bits[pos - 1] = (bits[pos - 1] == '0') ? '1' : '0';
+}
+
+/* ================================================================ */
+
+int main()
+{
+    char filename[100];
+    char srcURL[50], destURL[50];
+    char stuffedData[2100];
+    char destuffedData[2100];
+    char binBuf[80];
+    FILE *fp, *fout;
+    int srcIndex, destIndex;
+    int srcPort, destPort;
+    int ch, idx = 0;
+
+    char generator[64];          /* same generator polynomial used by sender */
+    char receivedBits[17100];    /* the received Data+CRC bit-stream (dividend) */
+    char remainder[64];          /* result of the division */
+    char errorChoice;            /* 'y' or 'n' -- simulate an error or not */
+    int  errorPos;               /* bit position to flip, if simulating error */
+
+    srand((unsigned int)time(NULL));
+
+    printf("Enter file name (containing stuffed data): ");
+    scanf("%s", filename);
+
+    fp = fopen(filename, "r");
+    if(fp == NULL)
+    {
+        printf("Error: cannot open input file %s\n", filename);
+        return 1;
+    }
+
+    while((ch = fgetc(fp)) != EOF)
+        stuffedData[idx++] = (char)ch;
+    stuffedData[idx] = '\0';
+    fclose(fp);
+
+    printf("Enter Source URL : ");
+    scanf("%s", srcURL);
+    printf("Enter Destination URL : ");
+    scanf("%s", destURL);
+
+    srcIndex  = searchAddress(srcURL);
+    destIndex = searchAddress(destURL);
+
+    if(srcIndex == -1 || destIndex == -1)
+    {
+        printf("Error: URL not found in address table\n");
+        return 1;
+    }
+
+    srcPort  = (rand() % 64512) + 1024;
+    destPort = (rand() % 64512) + 1024;
+
+    /* De-stuff the received data */
+    characterDestuff(stuffedData, destuffedData);
+
+    /* ---------------- CRC verification input ---------------- */
+    printf("Enter Generator Polynomial (same as sender used, e.g. 1101) : ");
+    scanf("%s", generator);
+
+    printf("Enter received Data+CRC bit-stream (the dividend) : ");
+    scanf("%s", receivedBits);
+
+    printf("Do you want to simulate a transmission error on this frame? (y/n) : ");
+    scanf(" %c", &errorChoice);
+
+    if(errorChoice == 'y' || errorChoice == 'Y')
+    {
+        printf("Enter bit position to flip (1 to %d) : ", (int)strlen(receivedBits));
+        scanf("%d", &errorPos);
+        flipBit(receivedBits, errorPos);
+    }
+
+    /* Divide the received Data+CRC by the generator polynomial */
+    mod2Divide(receivedBits, generator, remainder);
+
+    fout = fopen("receiver_output.txt", "w");
+    if(fout == NULL)
+    {
+        printf("Error creating output file\n");
+        return 1;
+    }
+
+    fprintf(fout, "===================== BISYNC FRAME (RECEIVER SIDE) =====================\n\n");
+    fprintf(fout, "FRAME FORMAT:\n");
+    fprintf(fout, "+-----+-----+-----+--------+-----+------+-----+------+\n");
+    fprintf(fout, "| SYN | SYN | SOH | HEADER | STX | BODY | ETX | CRC  |\n");
+    fprintf(fout, "+-----+-----+-----+--------+-----+------+-----+------+\n\n");
+
+    fprintf(fout, "------------------- SYN, SYN, SOH -------------------\n");
+    fprintf(fout, "SYN : 00010110\n");
+    fprintf(fout, "SYN : 00010110\n");
+    fprintf(fout, "SOH : 00000001\n\n");
+
+    fprintf(fout, "------------------------- HEADER FIELDS -------------------------\n");
+
+    fprintf(fout, "Source Port (Binary)      : ");
+    portToBinary(srcPort, binBuf);
+    fprintf(fout, "%s\n", binBuf);
+
+    fprintf(fout, "Destination Port (Binary) : ");
+    portToBinary(destPort, binBuf);
+    fprintf(fout, "%s\n\n", binBuf);
+
+    fprintf(fout, "Source IP (Binary)        : ");
+    ipToBinary(table[srcIndex].ip, binBuf);
+    fprintf(fout, "%s\n", binBuf);
+
+    fprintf(fout, "Destination IP (Binary)   : ");
+    ipToBinary(table[destIndex].ip, binBuf);
+    fprintf(fout, "%s\n\n", binBuf);
+
+    fprintf(fout, "Source MAC (Binary)       : ");
+    macToBinary(table[srcIndex].mac, binBuf);
+    fprintf(fout, "%s\n", binBuf);
+
+    fprintf(fout, "Destination MAC (Binary)  : ");
+    macToBinary(table[destIndex].mac, binBuf);
+    fprintf(fout, "%s\n\n", binBuf);
+
+    fprintf(fout, "---------------------------- STX ----------------------------------\n");
+    fprintf(fout, "STX : 00000010\n\n");
+
+    fprintf(fout, "---------------------------- BODY ---------------------------------\n");
+    fprintf(fout, "Received Stuffed Body (Character : Binary)\n");
+    printCharBinaryTable(fout, stuffedData);
+    fprintf(fout, "\n");
+
+    fprintf(fout, "Destuffed Body (Character : Binary)\n");
+    printCharBinaryTable(fout, destuffedData);
+    fprintf(fout, "\n");
+
+    fprintf(fout, "---------------------------- ETX ----------------------------------\n");
+    fprintf(fout, "ETX : 00000011\n\n");
+
+    fprintf(fout, "---------------------------- CRC / ERROR CHECK ---------------------------------\n");
+    fprintf(fout, "Generator Polynomial            : %s\n", generator);
+    fprintf(fout, "Received Data+CRC (dividend)    : %s\n", receivedBits);
+    if(errorChoice == 'y' || errorChoice == 'Y')
+        fprintf(fout, "Simulated error introduced at bit position : %d\n", errorPos);
+    else
+        fprintf(fout, "No error simulated (frame checked as received)\n");
+    fprintf(fout, "Remainder after division         : %s\n\n", remainder);
+
+    if(isAllZero(remainder))
+        fprintf(fout, "RESULT : No error detected. Frame accepted.\n");
+    else
+        fprintf(fout, "RESULT : Error detected in received frame! Frame rejected / retransmission requested.\n");
+
+    fclose(fout);
+
+    printf("\nFrame received and destuffed successfully.\n");
+    if(isAllZero(remainder))
+        printf("CRC Check: No error detected. Frame accepted.\n");
+    else
+        printf("CRC Check: Error detected in received frame!\n");
+    printf("Output written to: receiver_output.txt\n");
+
+    return 0;
+}
