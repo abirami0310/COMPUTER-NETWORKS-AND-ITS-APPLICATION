@@ -1,0 +1,98 @@
+#include <iostream>
+#include <vector>
+#include <algorithm>
+
+using namespace std;
+
+// Trie structure optimized for 15-bit integers
+struct TrieNode {
+    TrieNode* children[2];
+    vector<int> indices; // Stores indices of array elements visiting this node
+
+    TrieNode() {
+        children[0] = nullptr;
+        children[1] = nullptr;
+    }
+};
+
+// Insert a number into the Trie along with its 1-based index
+void insert(TrieNode* root, int num, int index) {
+    TrieNode* curr = root;
+    for (int i = 14; i >= 0; --i) {
+        int bit = (num >> i) & 1;
+        if (!curr->children[bit]) {
+            curr->children[bit] = new TrieNode();
+        }
+        curr = curr->children[bit];
+        curr->indices.push_back(index); // Log index for range queries
+    }
+}
+
+// Checks if any index in the vector falls within [p, q] using binary search
+bool hasValidIndex(const vector<int>& indices, int p, int q) {
+    auto it = lower_bound(indices.begin(), indices.end(), p);
+    return (it != indices.end() && *it <= q);
+}
+
+// Find the maximum XOR for value 'a' in the index range [p, q]
+int queryMaxXor(TrieNode* root, int a, int p, int q) {
+    TrieNode* curr = root;
+    int maxXorValue = 0;
+
+    for (int i = 14; i >= 0; --i) {
+        int bit = (a >> i) & 1;
+        int preferredBit = 1 - bit; // We want the opposite bit to maximize XOR
+
+        // Check if the preferred path exists and has an element within [p, q]
+        if (curr->children[preferredBit] && hasValidIndex(curr->children[preferredBit]->indices, p, q)) {
+            maxXorValue |= (1 << i);
+            curr = curr->children[preferredBit];
+        } else {
+            // Otherwise, we are forced to take the alternative path
+            curr = curr->children[bit];
+        }
+    }
+    return maxXorValue;
+}
+
+// Deep clean memory to handle multiple test cases cleanly
+void freeTrie(TrieNode* root) {
+    if (!root) return;
+    freeTrie(root->children[0]);
+    freeTrie(root->children[1]);
+    delete root;
+}
+
+void solve() {
+    int n, numQueries;
+    if (!(cin >> n >> numQueries)) return;
+
+    TrieNode* root = new TrieNode();
+    for (int i = 1; i <= n; ++i) {
+        int val;
+        cin >> val;
+        insert(root, val, i);
+    }
+
+    for (int i = 0; i < numQueries; ++i) {
+        int a, p, q;
+        cin >> a >> p >> q;
+        cout << queryMaxXor(root, a, p, q) << "\n";
+    }
+
+    freeTrie(root);
+}
+
+int main() {
+    // Optimize standard I/O operations for competitive programming limits
+    ios_base::sync_with_stdio(false);
+    cin.tie(NULL);
+
+    int testCases;
+    if (cin >> testCases) {
+        while (testCases--) {
+            solve();
+        }
+    }
+    return 0;
+}
