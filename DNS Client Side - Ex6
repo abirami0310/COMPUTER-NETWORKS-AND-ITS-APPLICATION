@@ -1,0 +1,88 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+
+#define BUFFER_SIZE 1024
+
+int main(int argc, char *argv[])
+{
+    int sockfd;
+    struct sockaddr_in server_addr;
+    char buffer[BUFFER_SIZE];
+
+    // Check command line arguments
+    if (argc != 3)
+    {
+        printf("Usage: %s <Server IP> <Port Number>\n", argv[0]);
+        return 1;
+    }
+
+    // Create UDP socket
+    sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+
+    if (sockfd < 0)
+    {
+        perror("socket failed");
+        exit(1);
+    }
+
+    // Set server address
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(atoi(argv[2]));
+
+    if (inet_pton(AF_INET,
+                  argv[1],
+                  &server_addr.sin_addr) <= 0)
+    {
+        perror("Invalid server address");
+        close(sockfd);
+        exit(1);
+    }
+
+    printf("UDP DNS Client\n");
+    printf("Enter URL to find its IP address.\n\n");
+
+    // Ask URL from user
+    printf("Enter URL: ");
+    fgets(buffer, BUFFER_SIZE, stdin);
+
+    // Remove newline
+    buffer[strcspn(buffer, "\n")] = '\0';
+
+    // Send URL to server
+    sendto(sockfd,
+           buffer,
+           strlen(buffer),
+           0,
+           (struct sockaddr *)&server_addr,
+           sizeof(server_addr));
+
+    // Receive response from server
+    socklen_t addr_len = sizeof(server_addr);
+
+    int n = recvfrom(sockfd,
+                     buffer,
+                     BUFFER_SIZE - 1,
+                     0,
+                     (struct sockaddr *)&server_addr,
+                     &addr_len);
+
+    if (n < 0)
+    {
+        perror("recvfrom failed");
+        close(sockfd);
+        exit(1);
+    }
+
+    buffer[n] = '\0';
+
+    // Display server response
+    printf("Server Response: %s\n", buffer);
+
+    // Close socket
+    close(sockfd);
+
+    return 0;
+}
