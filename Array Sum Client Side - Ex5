@@ -1,0 +1,59 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#define MAX 100
+int main(int argc, char* argv[])       
+{
+    
+    int s;                             
+    char* servName;                    
+    int servPort;                      
+    struct sockaddr_in servAddr;       
+    int size;                          
+    int arr[MAX];                      
+    int sum;                           
+    int i;
+    if (argc != 3)
+    {
+        printf("Error: two arguments are needed! Usage: %s <ServerIP> <Port>\n", argv[0]);
+        exit(1);
+    }
+    servName = argv[1];
+    servPort = atoi(argv[2]);    
+    printf("Enter number of elements: ");
+    scanf("%d", &size);
+    if (size <= 0 || size > MAX)
+    {
+        printf("Error: invalid array size!\n");
+        exit(1);
+    }
+    printf("Enter %d array elements:\n", size);
+    for (i = 0; i < size; i++)
+        scanf("%d", &arr[i]);  
+    memset(&servAddr, 0, sizeof(servAddr));
+    servAddr.sin_family = AF_INET;
+    inet_pton(AF_INET, servName, &servAddr.sin_addr);   
+    servAddr.sin_port = htons(servPort);                  
+    if ((s = socket(PF_INET, SOCK_STREAM, 0)) < 0)
+    {
+        perror("Error: socket creation failed!");
+        exit(1);
+    }  
+    if (connect(s, (struct sockaddr*)&servAddr, sizeof(servAddr)) < 0)
+    {
+        perror("Error: connection failed!");
+        exit(1);
+    }  
+    send(s, &size, sizeof(int), 0);
+    send(s, arr, size * sizeof(int), 0);  
+    recv(s, &sum, sizeof(int), 0);  
+    printf("\nSum received from server: %d\n", sum);  
+    close(s);  
+    exit(0);
+} 
+
+
