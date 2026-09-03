@@ -1,0 +1,108 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#define SERV_PORT 7034
+#define MAXLEN    2048
+char generator[64];
+int  genLen;
+char work[MAXLEN];
+char crcRemainder[64];
+void modulo2Divide(void)
+{
+    int i, j, n;
+
+    n = strlen(work);
+    for (i = 0; i <= n - genLen; i++)
+    {
+        if (work[i] == '1')
+        {
+            for (j = 0; j < genLen; j++)
+                work[i + j] = (work[i + j] == generator[j]) ? '0' : '1';
+        }
+    }
+    strcpy(crcRemainder, work + (n - (genLen - 1)));
+}
+
+int main(void)
+{
+    int ls, s;                          
+    int waitSize = 16;                  
+    socklen_t clntAddrLen;
+    struct sockaddr_in servAddr, clientAddr;
+    int  msgLen;
+    char buffer[MAXLEN];               
+    char reply[64];                    
+    char *sep;
+    int  i, allZero;
+    memset(&servAddr, 0, sizeof(servAddr));
+    servAddr.sin_family      = AF_INET;
+    servAddr.sin_addr.s_addr = htonl(INADDR_ANY);
+    servAddr.sin_port        = htons(SERV_PORT);
+   if ((ls = socket(PF_INET, SOCK_STREAM, 0)) < 0)
+    {
+        perror("Error: Listen socket failed!");
+        exit(1);
+    }
+    if (bind(ls, (struct sockaddr *)&servAddr, sizeof(servAddr)) < 0)
+    {
+        perror("Error: Binding failed!");
+        exit(1);
+    }
+  if (listen(ls, waitSize) < 0)
+    {
+        perror("Error: Listening failed!");
+        exit(1);
+    }
+
+    printf("CRC TCP Server running on port %d...\n", SERV_PORT);
+    clntAddrLen = sizeof(clientAddr);
+        if ((s = accept(ls, (struct sockaddr *)&clientAddr, &clntAddrLen)) < 0)
+        {
+            perror("Error: Accept failed!");
+            
+        }
+       recv(s, &msgLen, sizeof(int), 0);
+        recv(s, buffer, msgLen, 0);
+        buffer[msgLen] = '\0';
+
+       sep = strchr(buffer, '|');
+        if (sep == NULL)
+        {
+            printf("Malformed message received, ignoring.\n");
+            close(s);
+            
+        }
+        *sep = '\0';
+        strcpy(generator, buffer);
+        genLen = strlen(generator);
+        strcpy(work, sep + 1);
+
+        printf("\n----- CRC Verification -----\n");
+        printf("Generator  : %s\n", generator);
+        printf("Codeword   : %s\n", work);
+       modulo2Divide();
+        printf("Remainder  : %s\n", crcRemainder);
+        allZero = 1;
+        for (i = 0; i < genLen - 1; i++)
+        {
+            if (crcRemainder[i] != '0')
+            {
+                allZero = 0;
+                break;
+            }
+        }
+        if (allZero)
+            strcpy(reply, "No error detected - packet accepted");
+        else
+            strcpy(reply, "Error detected - packet discarded");
+
+        printf("Result     : %s\n", reply);
+        printf("-----------------------------\n");
+        send(s, reply, strlen(reply) + 1, 0);
+        close(s);
+    return 0;
+}
