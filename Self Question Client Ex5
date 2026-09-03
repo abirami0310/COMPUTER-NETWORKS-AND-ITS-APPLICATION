@@ -1,0 +1,163 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+
+#define SERVER_IP "127.0.0.1"
+#define PORT 8080
+#define BUFFER_SIZE 1024
+
+void perform_upload(int sock_fd) {
+    char filename[256];
+    printf("Enter local file path to upload: ");
+    scanf("%255s", filename);
+
+    FILE *fp = fopen(filename, "rb");
+    if (!fp) {
+        printf("Error: Local file does not exist.\n");
+        return;
+    }
+
+    // Determine target size
+    fseek(fp, 0, SEEK_END);
+    long filesize = ftell(fp);
+    fseek(fp, 0, SEEK_SET);
+
+    // Notify server of intention details
+    send(sock_fd, filename, sizeof(filename), 0);
+    send(sock_fd, &filesize, sizeof(filesize), 0);
+
+    char buffer[BUFFER_SIZE];
+    int read_bytes;
+    while ((read_bytes = fread(buffer, 1, BUFFER_SIZE, fp)) > 0) {
+        send(sock_fd, buffer, read_bytes, 0);
+    }
+    fclose(fp);
+    printf("File uploaded successfully!\n");
+}
+
+void perform_download(int sock_fd) {
+    char filename[256];
+    printf("Enter server file path to download: ");
+    scanf("%255s", filename);
+
+    // Request item
+    send(sock_fd, filename, sizeof(filename), 0);
+
+    long filesize = 0;
+    recv(sock_fd, &filesize, sizeof(filesize), 0);
+
+    if (filesize == -1) {
+        printf("Error: Remote file does not exist on the server.\n");
+        return;
+    }
+
+    char local_filename[300];
+    snprintf(local_filename, sizeof(local_filename), "downloaded_%s", filename);
+    FILE *fp = fopen(local_filename, "wb");
+
+    char buffer[BUFFER_SIZE];
+    long total_received = 0;
+    while (total_received < filesize) {
+        int bytes_to_read = (filesize - total_received < BUFFER_SIZE) ? (filesize - total_received) : BUFFER_SIZE;
+        int read_bytes = recv(sock_fd, buffer, bytes_to_read, 0);
+        if (read_bytes <= 0) break;
+        fwrite(buffer, 1, read_bytes, fp);
+        total_received += read_bytes;
+    }
+    fclose(fp);
+    printf("File downloaded successfully saved as: %s\n", local_filename);
+}
+
+int main() {
+    int sock_fd;
+    struct sockaddr_in server_addr;
+
+    sock_fd = socket(AF_INET, SOCK_STREAM, 0);
+
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(PORT);
+    inet_pton(AF_INET, SERVER_IP, &server_addr.sin_addr);
+
+    if (connect(sock_fd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
+        perror("Connection to server failed");
+        exit(1);
+    }
+
+    // Authenticate
+    char username[50], password[50], auth_status[20] = {0};
+    printf("=== Remote Multi-Service Authentication ===\n");
+    printf("Username: ");
+    scanf("%49s", username);
+    printf("Password: ");
+    scanf("%49s", password);
+
+    send(sock_fd, username, sizeof(username), 0);
+    send(sock_fd, password, sizeof(password), 0);
+    recv(sock_fd, auth_status, sizeof(auth_status), 0);
+
+    if (strcmp(auth_status, "SUCCESS") != 0) {
+        printf("Access Denied: Invalid credentials.\n");
+        close(sock_fd);
+        return 0;
+    }
+
+    // Print successful verification profile attributes on connection sequence
+    struct sockaddr_in local_addr;
+    socklen_t addr_len = sizeof(local_addr);
+    getsockname(sock_fd, (struct sockaddr *)&local_addr, &addr_len);
+    
+    char local_ip[INET_ADDRSTRLEN];
+    inet_ntop(AF_INET, &local_addr.sin_addr, local_ip, INET_ADDRSTRLEN);
+
+    printf("\n[SUCCESS] Verification complete!\n");
+    printf("Allocated Local Endpoint IP: %s\n", local_ip);
+    printf("Allocated Local Connection Port: %d\n\n", ntohs(local_addr.sin_port));
+
+    // Service Interactive Menu Loop
+    int choice;
+    char response[BUFFER_SIZE];
+    do {
+        printf("--- Main Control Service Menu ---\n");
+        printf("1. Upload a file\n");
+        printf("2. Download a file\n");
+        printf("3. Retrieve Server Date & Time\n");
+        printf("4. Display Server System Info\n");
+        printf("5. Terminate Session\n");
+        printf("Enter option (1-5): ");
+        if (scanf("%d", &choice) != 1) {
+            // Clear broken input characters if something other than int is provided
+            while (getchar() != '\n'); 
+            choice = 0;
+        }
+
+        // Communicate menu action indices
+        send(sock_fd, &choice, sizeof(choice), 0);
+
+        switch (choice) {
+            case 1:
+                perform_upload(sock_fd);
+                break;
+            case 2:
+                perform_download(sock_fd);
+                break;
+            case 3:
+            case 4:
+                memset(response, 0, BUFFER_SIZE);
+                recv(sock_fd, response, BUFFER_SIZE - 1, 0);
+                printf("\n[SERVER RESPONSE]: %s\n", response);
+                break;
+            case 5:
+                printf("Closing connection session channel. Goodbye.\n");
+                break;
+            default:
+                printf("Invalid selection! Please enter a valid menu selection integer.\n");
+                break;
+        }
+    } while (choice != 5);
+
+    close(sock_fd);
+    return 0;
+}
