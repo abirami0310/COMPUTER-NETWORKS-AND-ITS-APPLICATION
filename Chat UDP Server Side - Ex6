@@ -1,0 +1,88 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+
+#define PORT 8060
+#define BUFFER_SIZE 1024
+
+int main()
+{
+    int sockfd;
+    struct sockaddr_in server_addr, client_addr;
+    char buffer[BUFFER_SIZE];
+    socklen_t addr_len = sizeof(client_addr);
+
+    // Create UDP socket
+    sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+
+    if (sockfd < 0)
+    {
+        perror("socket failed");
+        exit(1);
+    }
+
+    // Set server address
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(PORT);
+    server_addr.sin_addr.s_addr = INADDR_ANY;
+
+    // Bind socket
+    if (bind(sockfd, (struct sockaddr *)&server_addr,
+             sizeof(server_addr)) < 0)
+    {
+        perror("bind failed");
+        close(sockfd);
+        exit(1);
+    }
+
+    printf("UDP Chat Server listening on port %d...\n", PORT);
+    printf("Waiting for client...\n\n");
+
+    while (1)
+    {
+        // Receive message from client
+        int n = recvfrom(sockfd, buffer, BUFFER_SIZE - 1, 0,
+                         (struct sockaddr *)&client_addr,
+                         &addr_len);
+
+        if (n < 0)
+        {
+            perror("recvfrom failed");
+            close(sockfd);
+            exit(1);
+        }
+
+        buffer[n] = '\0';
+
+        printf("Client: %s", buffer);
+
+        // Check for bye
+        if (strncmp(buffer, "bye", 3) == 0)
+        {
+            printf("Client ended the chat.\n");
+            break;
+        }
+
+        // Get server reply
+        printf("Server: ");
+        fgets(buffer, BUFFER_SIZE, stdin);
+
+        // Send reply to client
+        sendto(sockfd, buffer, strlen(buffer), 0,
+               (struct sockaddr *)&client_addr,
+               addr_len);
+
+        // Check for bye
+        if (strncmp(buffer, "bye", 3) == 0)
+        {
+            printf("Server ended the chat.\n");
+            break;
+        }
+    }
+
+    close(sockfd);
+
+    return 0;
+}
